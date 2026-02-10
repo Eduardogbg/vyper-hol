@@ -31,8 +31,9 @@ End
 (* Instruction-level equivalence for peephole rewrites.
    Requires operands to be defined to avoid changing Error behavior. *)
 Theorem algebraic_opt_step_correct:
-  !inst inst' prefer_iszero is_truthy cmp_flip s.
-    transform_inst_list prefer_iszero is_truthy cmp_flip inst = [inst'] /\
+  !ranges cmp_after fn inst inst' prefer_iszero is_truthy cmp_flip s.
+    transform_inst_list ranges cmp_after fn
+      prefer_iszero is_truthy cmp_flip inst = [inst'] /\
     eval_operands inst.inst_operands s <> NONE ==>
     step_inst inst' s = step_inst inst s
 Proof
@@ -41,19 +42,20 @@ QED
 
 (* Block-level correctness using pass_correct (no fresh vars). *)
 Theorem algebraic_opt_block_correct:
-  !bb s prefer_iszero is_truthy cmp_flip.
+  !ranges cmp_after fn bb s prefer_iszero is_truthy cmp_flip.
     algebraic_opt_safe_block bb s ==>
     result_equiv_except {}
       (run_block bb s)
-      (run_block (transform_block prefer_iszero is_truthy cmp_flip bb) s)
+      (run_block (transform_block ranges cmp_after fn
+                   prefer_iszero is_truthy cmp_flip bb) s)
 Proof
   cheat
 QED
 
 (* Function-level correctness using pass_correct (no fresh vars). *)
 Theorem algebraic_opt_function_correct:
-  !fn fn' s.
-    algebraic_opt_transform fn fn' /\
+  !ranges fn fn' s.
+    algebraic_opt_transform ranges fn fn' /\
     algebraic_opt_safe_function fn s ==>
     pass_correct {}
       (\fuel. run_function fuel fn s)

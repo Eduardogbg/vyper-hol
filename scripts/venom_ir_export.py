@@ -37,6 +37,7 @@ from vyper.compiler.settings import OptimizationLevel, Settings
 from vyper.venom.analysis.analysis import IRAnalysesCache
 from vyper.venom.analysis.dfg import DFGAnalysis
 from vyper.venom.analysis.liveness import LivenessAnalysis
+from vyper.venom.analysis.variable_range import VariableRangeAnalysis
 from vyper.venom.basicblock import (
     IRBasicBlock,
     IRInstruction,
@@ -86,7 +87,7 @@ def _encode_instruction(
         "id": inst_id,
         "opcode": _opcode_to_hol(inst.opcode),
         "operands": [_encode_operand(op) for op in inst.operands],
-        "outputs": [inst.output.name] if inst.output is not None else [],
+        "outputs": [v.name for v in inst.get_outputs()],
     }
     if hints is not None:
         payload["hints"] = hints
@@ -132,18 +133,21 @@ class AlgebraicOptimizationPassWithHints(AlgebraicOptimizationPass):
         self.hints: dict[IRInstruction, dict[str, bool]] = {}
 
     def run_pass(self):
-        # Single algebraic pass + offset lowering; ignore iszero-chain.
         self.dfg = self.analyses_cache.request_analysis(DFGAnalysis)
+        self.range_analysis = self.analyses_cache.force_analysis(VariableRangeAnalysis)
         self.updater = InstUpdater(self.dfg)
         self._handle_offset()
+        self._algebraic_opt()
+        self._optimize_iszero_chains()
         self._algebraic_opt()
         self.analyses_cache.invalidate_analysis(LivenessAnalysis)
 
     def _handle_inst_peephole(self, inst: IRInstruction):
-        if inst.output is None or inst.is_volatile or inst.opcode == "assign" or inst.is_pseudo:
+        if inst.num_outputs != 1 or inst.is_volatile or inst.opcode == "assign" or inst.is_pseudo:
             return super()._handle_inst_peephole(inst)
 
-        uses = self.dfg.get_uses(inst.output)
+        inst_out = inst.output
+        uses = self.dfg.get_uses(inst_out)
         is_truthy = all(i.opcode in TRUTHY_INSTRUCTIONS for i in uses)
         prefer_iszero = all(i.opcode in ("assert", "iszero") for i in uses)
 
@@ -155,7 +159,7 @@ class AlgebraicOptimizationPassWithHints(AlgebraicOptimizationPass):
 
     def _optimize_comparator_instruction(self, inst, prefer_iszero):
         cmp_flip = False
-        if inst.output is not None:
+        if inst.num_outputs == 1:
             uses = self.dfg.get_uses(inst.output)
             if len(uses) == 1:
                 after = uses.first()
@@ -203,6 +207,7 @@ PASS_REGISTRY: dict[str, dict[str, Any]] = {
     "algebraic_optimization": {
         "runner": _run_algebraic_opt_with_hints,
         "hints": True,
+        "ranges": True,
     },
 }
 
@@ -252,6 +257,25 @@ def export_from_trace_file(
                 runner = spec["runner"]
                 opt = runner(fn)
                 after_enc = _encode_function(fn)
+                ranges: list[dict[str, Any]] = []
+                if spec.get("ranges"):
+                    range_analysis = opt.range_analysis
+                    for inst, inst_dict in inst_refs:
+                        inst_id = inst_dict["id"]
+                        for op in inst.operands:
+                            r = range_analysis.get_range(op, inst)
+                            ranges.append(
+                                {
+                                    "inst_id": inst_id,
+                                    "operand": _encode_operand(op),
+                                    "range": {
+                                        "is_top": r.is_top,
+                                        "is_empty": r.is_empty,
+                                        "lo": r.lo,
+                                        "hi": r.hi,
+                                    },
+                                }
+                            )
                 for inst, inst_dict in inst_refs:
                     if spec.get("hints"):
                         hints = opt.hints.get(inst, {})
@@ -275,6 +299,7 @@ def export_from_trace_file(
                     "before": before_enc,
                     "after": after_enc,
                     "iszero_subst": [],
+                    "ranges": ranges,
                 }
             )
 

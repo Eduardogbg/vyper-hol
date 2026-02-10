@@ -7,7 +7,9 @@
 
 # (symlink to) generated Vyper tests
 tests/vyper-test-exports
-venom/tests/venom-ir-export
+venom/tests/venom-ir-export/*
+!venom/tests/venom-ir-export/fixtures/
+!venom/tests/venom-ir-export/fixtures/**
 
 .claude/
 CLAUDE.local.md

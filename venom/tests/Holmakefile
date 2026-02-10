@@ -1,6 +1,4 @@
-# Venom pass trace tests
-INCLUDES = ../../semantics ../../frontend ../../syntax $(VFMDIR)/util $(VFMDIR)/spec
-
-all:
-	$(HOLDIR)/bin/hol -q $$PWD/runPassTraceTest.sml
-.PHONY: all
+# Venom pass tests (executed via *Script.sml side effects)
+INCLUDES = ../../semantics ../../frontend ../../syntax ../../venom \
+           ../../venom/passes/algebraic_optimization \
+           $(VFMDIR)/util $(VFMDIR)/spec
