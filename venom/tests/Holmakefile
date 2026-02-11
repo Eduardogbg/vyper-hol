@@ -2,3 +2,6 @@
 INCLUDES = ../../semantics ../../frontend ../../syntax ../../venom \
            ../../venom/passes/algebraic_optimization \
            $(VFMDIR)/util $(VFMDIR)/spec
+
+# Run the algebraic optimizer unit test theory by default in this directory.
+TARGETS = test_algebraic_binoptTheory

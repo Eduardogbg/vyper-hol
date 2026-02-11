@@ -33,11 +33,17 @@ Definition lit_eq_def:
 End
 
 Definition lit_is_zero_def:
-  lit_is_zero op = lit_eq op (0w:bytes32)
+  lit_is_zero op =
+    case op of
+      Lit w => (w2n w = 0)
+    | _ => F
 End
 
 Definition lit_is_one_def:
-  lit_is_one op = lit_eq op (1w:bytes32)
+  lit_is_one op =
+    case op of
+      Lit w => (w2n w = 1)
+    | _ => F
 End
 
 Definition lit_is_ones_def:
@@ -147,6 +153,13 @@ Definition lit_of_num_def:
   lit_of_num n = Lit ((n2w n):bytes32)
 End
 
+Definition inst_single_output_def:
+  inst_single_output inst =
+    case inst.inst_outputs of
+      [v] => SOME v
+    | _ => NONE
+End
+
 Definition mk_not_def:
   mk_not inst op =
     inst with <| inst_opcode := NOT; inst_operands := [op] |>
@@ -185,13 +198,21 @@ Definition max_int256_i_def:
 End
 
 Definition is_commutative_def:
-  is_commutative op <=>
-    MEM op [ADD; MUL; AND; OR; XOR; EQ]
+  is_commutative ADD = T /\
+  is_commutative MUL = T /\
+  is_commutative AND = T /\
+  is_commutative OR = T /\
+  is_commutative XOR = T /\
+  is_commutative EQ = T /\
+  is_commutative _ = F
 End
 
 Definition is_comparator_def:
-  is_comparator op <=>
-    MEM op [GT; LT; SGT; SLT]
+  is_comparator GT = T /\
+  is_comparator LT = T /\
+  is_comparator SGT = T /\
+  is_comparator SLT = T /\
+  is_comparator _ = F
 End
 
 Definition flip_comparator_def:

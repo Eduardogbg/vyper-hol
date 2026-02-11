@@ -222,8 +222,8 @@ Definition rewrite_shift_def:
     | _ => [inst]
 End
 
-Definition rewrite_signextend_def:
-  rewrite_signextend ranges fn inst =
+Definition rewrite_signextend_insts_def:
+  rewrite_signextend_insts ranges insts inst =
     case inst.inst_operands of
       [x_op; n_op] =>
         (case n_op of
@@ -241,7 +241,7 @@ Definition rewrite_signextend_def:
                  else
                    (case x_op of
                       Var v =>
-                        (case find_inst_output fn v of
+                        (case find_inst_output_insts v insts of
                            SOME inst2 =>
                              if inst2.inst_opcode = SIGNEXTEND then
                                (case inst2.inst_operands of
@@ -259,6 +259,11 @@ Definition rewrite_signextend_def:
     | _ => [inst]
 End
 
+Definition rewrite_signextend_def:
+  rewrite_signextend ranges fn inst =
+    rewrite_signextend_insts ranges (all_insts fn) inst
+End
+
 Definition rewrite_eq_def:
   rewrite_eq prefer_iszero inst =
     case inst.inst_operands of
@@ -267,13 +272,21 @@ Definition rewrite_eq_def:
         else if lit_is_zero op1 then
           [inst with <| inst_opcode := ISZERO; inst_operands := [op2] |>]
         else if lit_is_ones op1 then
-          let tmp = mk_inst (inst.inst_id + 1) NOT [op2] [fresh_var inst.inst_id] in
+          let tmp_v =
+            case inst_single_output inst of
+              SOME v => v
+            | NONE => fresh_var inst.inst_id in
+          let tmp = mk_inst (inst.inst_id + 1) NOT [op2] [tmp_v] in
           [tmp; inst with <| inst_opcode := ISZERO;
-                              inst_operands := [Var (fresh_var inst.inst_id)] |>]
+                              inst_operands := [Var tmp_v] |>]
         else if prefer_iszero then
-          let tmp = mk_inst (inst.inst_id + 1) XOR [op1; op2] [fresh_var inst.inst_id] in
+          let tmp_v =
+            case inst_single_output inst of
+              SOME v => v
+            | NONE => fresh_var inst.inst_id in
+          let tmp = mk_inst (inst.inst_id + 1) XOR [op1; op2] [tmp_v] in
           [tmp; inst with <| inst_opcode := ISZERO;
-                              inst_operands := [Var (fresh_var inst.inst_id)] |>]
+                              inst_operands := [Var tmp_v] |>]
         else [inst]
     | _ => [inst]
 End
@@ -340,15 +353,23 @@ Definition cmp_boundary_rewrite_def:
         [inst with <| inst_opcode := EQ;
                        inst_operands := [op2; Lit never] |>]
       else if prefer_iszero /\ lit_eq op1 almost_always then
+        let tmp_v =
+          case inst_single_output inst of
+            SOME v => v
+          | NONE => fresh_var inst.inst_id in
         let tmp = mk_inst (inst.inst_id + 1) EQ [op1; op2]
-                        [fresh_var inst.inst_id] in
+                        [tmp_v] in
         [tmp; inst with <| inst_opcode := ISZERO;
-                            inst_operands := [Var (fresh_var inst.inst_id)] |>]
+                            inst_operands := [Var tmp_v] |>]
       else if inst.inst_opcode = GT /\ lit_is_zero op1 then
+        let tmp_v =
+          case inst_single_output inst of
+            SOME v => v
+          | NONE => fresh_var inst.inst_id in
         let tmp = mk_inst (inst.inst_id + 1) ISZERO [op2]
-                        [fresh_var inst.inst_id] in
+                        [tmp_v] in
         [tmp; inst with <| inst_opcode := ISZERO;
-                            inst_operands := [Var (fresh_var inst.inst_id)] |>]
+                            inst_operands := [Var tmp_v] |>]
       else if cmp_flip /\ is_lit op1 then
         let new_op = flip_comparator inst.inst_opcode in
         let adj =
@@ -389,19 +410,23 @@ Definition apply_cmp_after_action_def:
       CMP_AFTER_REPLACE v =>
         [mk_assign inst (Var v)]
     | CMP_AFTER_INSERT v =>
-        let tmp = fresh_var inst.inst_id in
+        let tmp =
+          case inst_single_output inst of
+            SOME v' => v'
+          | NONE => fresh_var inst.inst_id in
         let isz = mk_inst (inst.inst_id + 1) ISZERO [Var v] [tmp] in
         let inst' = inst with inst_operands := [Var tmp] in
         [isz; inst']
 End
 
-Definition transform_inst_list_def:
-  transform_inst_list ranges cmp_after fn prefer_iszero is_truthy cmp_flip inst =
+Definition transform_inst_list_ctx_def:
+  transform_inst_list_ctx ranges cmp_after insts
+                          prefer_iszero is_truthy cmp_flip inst =
     case cmp_after_lookup cmp_after inst.inst_id of
       SOME act => apply_cmp_after_action act inst
     | NONE =>
         let inst1 = flip_flippable_left inst in
-        let insts =
+        let insts' =
           case inst1.inst_opcode of
             ADD => rewrite_add inst1
           | SUB => rewrite_sub inst1
@@ -417,7 +442,7 @@ Definition transform_inst_list_def:
           | SHL => rewrite_shift inst1
           | SHR => rewrite_shift inst1
           | SAR => rewrite_shift inst1
-          | SIGNEXTEND => rewrite_signextend ranges fn inst1
+          | SIGNEXTEND => rewrite_signextend_insts ranges insts inst1
           | EQ => rewrite_eq prefer_iszero inst1
           | GT => rewrite_cmp ranges prefer_iszero cmp_flip inst1
           | LT => rewrite_cmp ranges prefer_iszero cmp_flip inst1
@@ -425,52 +450,134 @@ Definition transform_inst_list_def:
           | SLT => rewrite_cmp ranges prefer_iszero cmp_flip inst1
           | _ => [inst1]
         in
-          flip_flippable_list insts
+          flip_flippable_list insts'
+End
+
+Definition transform_inst_list_def:
+  transform_inst_list ranges cmp_after fn prefer_iszero is_truthy cmp_flip inst =
+    transform_inst_list_ctx ranges cmp_after (all_insts fn)
+      prefer_iszero is_truthy cmp_flip inst
 End
 
 (* ==========================================================================
    Block / Function / Context Transforms
    ========================================================================== *)
 
+Definition transform_insts_ctx_acc_def:
+  transform_insts_ctx_acc ranges cmp_after insts
+                          prefer_iszero is_truthy cmp_flip work acc =
+    case work of
+      [] => REVERSE acc
+    | inst::rest =>
+        let out =
+          transform_inst_list_ctx ranges cmp_after insts
+            prefer_iszero is_truthy cmp_flip inst in
+          transform_insts_ctx_acc ranges cmp_after insts
+            prefer_iszero is_truthy cmp_flip rest (rev_prepend out acc)
+End
+
+Definition transform_insts_ctx_def:
+  transform_insts_ctx ranges cmp_after insts
+                      prefer_iszero is_truthy cmp_flip work =
+    transform_insts_ctx_acc ranges cmp_after insts
+      prefer_iszero is_truthy cmp_flip work []
+End
+
+Definition transform_block_ctx_def:
+  transform_block_ctx ranges cmp_after insts
+                      prefer_iszero is_truthy cmp_flip bb =
+    bb with bb_instructions :=
+      transform_insts_ctx ranges cmp_after insts
+        prefer_iszero is_truthy cmp_flip bb.bb_instructions
+End
+
+Definition transform_blocks_ctx_def:
+  transform_blocks_ctx ranges cmp_after insts
+                       prefer_iszero is_truthy cmp_flip bbs =
+    case bbs of
+      [] => []
+    | bb::rest =>
+        transform_block_ctx ranges cmp_after insts
+          prefer_iszero is_truthy cmp_flip bb ::
+        transform_blocks_ctx ranges cmp_after insts
+          prefer_iszero is_truthy cmp_flip rest
+End
+
 Definition transform_block_def:
   transform_block ranges cmp_after fn prefer_iszero is_truthy cmp_flip bb =
-    bb with bb_instructions :=
-      FLAT (MAP (transform_inst_list ranges cmp_after fn
-                   prefer_iszero is_truthy cmp_flip) bb.bb_instructions)
+    transform_block_ctx ranges cmp_after (all_insts fn)
+      prefer_iszero is_truthy cmp_flip bb
 End
 
 Definition transform_function_def:
   transform_function ranges cmp_after fn prefer_iszero is_truthy cmp_flip =
-    fn with fn_blocks :=
-      MAP (transform_block ranges cmp_after fn
-            prefer_iszero is_truthy cmp_flip) fn.fn_blocks
+    let insts = all_insts fn in
+      fn with fn_blocks :=
+        transform_blocks_ctx ranges cmp_after insts
+          prefer_iszero is_truthy cmp_flip fn.fn_blocks
+End
+
+Definition transform_inst_list_hints_ctx_def:
+  transform_inst_list_hints_ctx ranges cmp_after insts hints inst =
+    let h = hint_lookup hints inst.inst_id in
+      transform_inst_list_ctx ranges cmp_after insts
+        h.prefer_iszero h.is_truthy h.cmp_flip inst
 End
 
 Definition transform_inst_list_hints_def:
   transform_inst_list_hints ranges cmp_after fn hints inst =
-    let h = hint_lookup hints inst.inst_id in
-      transform_inst_list ranges cmp_after fn
-        h.prefer_iszero h.is_truthy h.cmp_flip inst
+    transform_inst_list_hints_ctx ranges cmp_after (all_insts fn) hints inst
+End
+
+Definition transform_insts_hints_ctx_acc_def:
+  transform_insts_hints_ctx_acc ranges cmp_after insts hints work acc =
+    case work of
+      [] => REVERSE acc
+    | inst::rest =>
+        let out = transform_inst_list_hints_ctx ranges cmp_after insts hints inst in
+          transform_insts_hints_ctx_acc ranges cmp_after insts hints rest
+            (rev_prepend out acc)
+End
+
+Definition transform_insts_hints_ctx_def:
+  transform_insts_hints_ctx ranges cmp_after insts hints work =
+    transform_insts_hints_ctx_acc ranges cmp_after insts hints work []
+End
+
+Definition transform_block_hints_ctx_def:
+  transform_block_hints_ctx ranges cmp_after insts hints bb =
+    bb with bb_instructions :=
+      transform_insts_hints_ctx ranges cmp_after insts hints bb.bb_instructions
 End
 
 Definition transform_block_hints_def:
   transform_block_hints ranges cmp_after fn hints bb =
-    bb with bb_instructions :=
-      FLAT (MAP (transform_inst_list_hints ranges cmp_after fn hints)
-            bb.bb_instructions)
+    transform_block_hints_ctx ranges cmp_after (all_insts fn) hints bb
+End
+
+Definition transform_blocks_hints_ctx_def:
+  transform_blocks_hints_ctx ranges cmp_after insts hints bbs =
+    case bbs of
+      [] => []
+    | bb::rest =>
+        transform_block_hints_ctx ranges cmp_after insts hints bb ::
+        transform_blocks_hints_ctx ranges cmp_after insts hints rest
 End
 
 Definition transform_function_hints_range_def:
   transform_function_hints_range ranges cmp_after hints fn =
-    fn with fn_blocks :=
-      MAP (transform_block_hints ranges cmp_after fn hints) fn.fn_blocks
+    let insts = all_insts fn in
+      fn with fn_blocks :=
+        transform_blocks_hints_ctx ranges cmp_after insts hints fn.fn_blocks
 End
 
 Definition algebraic_opt_once_def:
   algebraic_opt_once ranges fn =
-    let hints = compute_hints fn in
-    let cmp_after = compute_cmp_after fn in
-      transform_function_hints_range ranges cmp_after hints fn
+    let insts = all_insts fn in
+    let hints = compute_hints_from_insts insts insts in
+    let cmp_after = compute_cmp_after_from_insts insts insts in
+      fn with fn_blocks :=
+        transform_blocks_hints_ctx ranges cmp_after insts hints fn.fn_blocks
 End
 
 Definition transform_function_hints_def:

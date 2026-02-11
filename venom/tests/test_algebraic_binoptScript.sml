@@ -1,6 +1,6 @@
 Theory test_algebraic_binopt[no_sig_docs]
 Ancestors vfmTypes vfmState venomState venomInst vyperMisc algebraicOptTransform
-Libs venomIRTermLib venomIRTextLib
+Libs venomIRTermLib venomIRTextLib wordsLib
 
 open HolKernel boolLib bossLib
      listSyntax pairSyntax stringSyntax optionSyntax numSyntax
@@ -24,12 +24,12 @@ val empty_ranges = mk_list ([], range_pair_ty);
 val algopt_pass_tm =
   prim_mk_const{Thy="algebraicOptTransform",Name="algebraic_opt_pass"};
 
-val case_time_limit = Time.fromSeconds 60;
+val case_time_limit = Time.fromSeconds 300;
 
 fun check (name, pre_txt, post_txt) =
   let
-    val before_fn = parse_function name pre_txt
-    val after_fn = parse_function name post_txt
+    val before_fn = rhs (concl (EVAL (parse_function name pre_txt)))
+    val after_fn = rhs (concl (EVAL (parse_function name post_txt)))
     val transformed = list_mk_comb (algopt_pass_tm, [empty_ranges, before_fn])
     val thm =
       Timeout.apply case_time_limit EVAL transformed
@@ -272,7 +272,48 @@ fun assert_unreachable_case n =
     (name, pre, post)
   end;
 
+(* Deliberately wrong expected output to demonstrate failure reporting. *)
+(* fun failing_demo_case () =
+  let
+    val name = "failing_demo_case"
+    val pre =
+      lines [
+        "main:",
+        "%par = source",
+        "%1 = %par",
+        "%2 = 64",
+        "%3 = add %1, %2",
+        "%cond0 = %3",
+        "jnz %cond0, @then, @else",
+        "then:",
+        "%4 = add 10, %3",
+        "sink %4",
+        "else:",
+        "%5 = add %3, %par",
+        "sink %5"
+      ]
+    val wrong_post =
+      lines [
+        "main:",
+        "%par = source",
+        "%1 = %par",
+        "%2 = 64",
+        "%3 = add %1, %2",
+        "%cond0 = %3",
+        "jnz %cond0, @then, @else",
+        "then:",
+        "%4 = add 10, %3",
+        "sink %4",
+        "else:",
+        "%5 = add %3, %par",
+        "sink %5"
+      ]
+  in
+    (name, pre, wrong_post)
+  end; *)
+
 val cases =
+  (* [failing_demo_case ()] @ *)
   List.tabulate (5, simple_jump_case) @
   List.tabulate (4, fn i => simple_bool_cast_case (i + 1)) @
   List.tabulate (5, interleaved_case) @

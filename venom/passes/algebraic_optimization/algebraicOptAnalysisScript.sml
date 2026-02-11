@@ -10,17 +10,27 @@ Ancestors
    Instruction and Use Traversal
    ========================================================================== *)
 
-Definition all_insts_blocks_def:
-  all_insts_blocks bbs =
+Definition rev_prepend_def:
+  rev_prepend xs acc =
+    case xs of
+      [] => acc
+    | x::rest => rev_prepend rest (x::acc)
+End
+
+Definition all_insts_blocks_rev_def:
+  all_insts_blocks_rev bbs acc =
     case bbs of
-      [] => []
-    | basic_block _ insts :: rest => insts ++ all_insts_blocks rest
+      [] => acc
+    | bb::rest =>
+        all_insts_blocks_rev rest (rev_prepend bb.bb_instructions acc)
+End
+
+Definition all_insts_blocks_def:
+  all_insts_blocks bbs = REVERSE (all_insts_blocks_rev bbs [])
 End
 
 Definition all_insts_def:
-  all_insts fn =
-    case fn of
-      ir_function _ bbs => all_insts_blocks bbs
+  all_insts fn = all_insts_blocks fn.fn_blocks
 End
 
 Definition inst_uses_var_def:
@@ -39,9 +49,9 @@ Definition uses_of_var_insts_def:
   uses_of_var_insts v insts =
     case insts of
       [] => []
-    | instruction id opc ops outs :: rest =>
-        if operand_list_has_var v ops then
-          instruction id opc ops outs :: uses_of_var_insts v rest
+    | inst::rest =>
+        if operand_list_has_var v inst.inst_operands then
+          inst :: uses_of_var_insts v rest
         else
           uses_of_var_insts v rest
 End
@@ -51,28 +61,34 @@ Definition uses_of_var_def:
 End
 
 Definition is_truthy_use_opcode_def:
-  is_truthy_use_opcode op <=>
-    op = ISZERO \/ op = JNZ \/ op = ASSERT \/ op = ASSERT_UNREACHABLE
+  is_truthy_use_opcode ISZERO = T /\
+  is_truthy_use_opcode JNZ = T /\
+  is_truthy_use_opcode ASSERT = T /\
+  is_truthy_use_opcode ASSERT_UNREACHABLE = T /\
+  is_truthy_use_opcode _ = F
 End
 
 Definition is_prefer_iszero_opcode_def:
-  is_prefer_iszero_opcode op <=> op = ISZERO \/ op = ASSERT
+  is_prefer_iszero_opcode ISZERO = T /\
+  is_prefer_iszero_opcode ASSERT = T /\
+  is_prefer_iszero_opcode _ = F
 End
 
 Definition all_uses_truthy_ops_def:
   all_uses_truthy_ops uses =
     case uses of
       [] => T
-    | instruction _ opc _ _ :: rest =>
-        is_truthy_use_opcode opc /\ all_uses_truthy_ops rest
+    | inst::rest =>
+        is_truthy_use_opcode inst.inst_opcode /\ all_uses_truthy_ops rest
 End
 
 Definition all_uses_prefer_iszero_ops_def:
   all_uses_prefer_iszero_ops uses =
     case uses of
       [] => T
-    | instruction _ opc _ _ :: rest =>
-        is_prefer_iszero_opcode opc /\ all_uses_prefer_iszero_ops rest
+    | inst::rest =>
+        is_prefer_iszero_opcode inst.inst_opcode /\
+        all_uses_prefer_iszero_ops rest
 End
 
 Definition uses_all_truthy_def:
@@ -85,12 +101,22 @@ Definition uses_prefer_iszero_def:
     all_uses_prefer_iszero_ops (uses_of_var fn v)
 End
 
+Definition uses_all_truthy_insts_def:
+  uses_all_truthy_insts insts v <=>
+    all_uses_truthy_ops (uses_of_var_insts v insts)
+End
+
+Definition uses_prefer_iszero_insts_def:
+  uses_prefer_iszero_insts insts v <=>
+    all_uses_prefer_iszero_ops (uses_of_var_insts v insts)
+End
+
 (* ==========================================================================
    Hint Computation
    ========================================================================== *)
 
-Definition cmp_flip_hint_def:
-  cmp_flip_hint fn inst =
+Definition cmp_flip_hint_for_uses_def:
+  cmp_flip_hint_for_uses insts inst uses =
     if ~is_comparator inst.inst_opcode then F
     else
       case inst.inst_operands of
@@ -98,76 +124,116 @@ Definition cmp_flip_hint_def:
           if ~(is_lit op1 \/ (is_comparator inst.inst_opcode /\ is_lit op2))
           then F
           else
-            (case inst_output inst of
-               NONE => F
-             | SOME v =>
-                 (case uses_of_var fn v of
-                    [after] =>
-                      if is_prefer_iszero_opcode after.inst_opcode then
-                        if after.inst_opcode = ISZERO then
-                          (case inst_output after of
-                             NONE => F
-                           | SOME v2 =>
-                               (case uses_of_var fn v2 of
-                                  [use2] =>
-                                    if use2.inst_opcode = ASSERT then F else T
-                                | _ => F))
-                        else T
-                      else F
-                  | _ => F))
+            (case uses of
+               [after] =>
+                 if is_prefer_iszero_opcode after.inst_opcode then
+                   if after.inst_opcode = ISZERO then
+                     (case inst_output after of
+                        NONE => F
+                      | SOME v2 =>
+                          (case uses_of_var_insts v2 insts of
+                             [use2] =>
+                               if use2.inst_opcode = ASSERT then F else T
+                           | _ => F))
+                   else T
+                 else F
+             | _ => F)
       | _ => F
+End
+
+Definition cmp_flip_hint_insts_def:
+  cmp_flip_hint_insts insts inst =
+    case inst_output inst of
+      NONE => F
+    | SOME v =>
+        cmp_flip_hint_for_uses insts inst (uses_of_var_insts v insts)
+End
+
+Definition cmp_flip_hint_def:
+  cmp_flip_hint fn inst = cmp_flip_hint_insts (all_insts fn) inst
+End
+
+Definition compute_hint_insts_def:
+  compute_hint_insts insts inst =
+    case inst_output inst of
+      NONE => default_hint
+    | SOME v =>
+        let uses = uses_of_var_insts v insts in
+        <| prefer_iszero := all_uses_prefer_iszero_ops uses;
+           is_truthy := all_uses_truthy_ops uses;
+           cmp_flip := cmp_flip_hint_for_uses insts inst uses |>
 End
 
 Definition compute_hint_def:
   compute_hint fn inst =
-    case inst_output inst of
-      NONE => default_hint
-    | SOME v =>
-        <| prefer_iszero := uses_prefer_iszero fn v;
-           is_truthy := uses_all_truthy fn v;
-           cmp_flip := cmp_flip_hint fn inst |>
+    compute_hint_insts (all_insts fn) inst
+End
+
+Definition compute_hints_from_insts_def:
+  compute_hints_from_insts insts work =
+    case work of
+      [] => []
+    | inst::rest =>
+        (inst.inst_id, compute_hint_insts insts inst) ::
+        compute_hints_from_insts insts rest
 End
 
 Definition compute_hints_insts_def:
   compute_hints_insts fn insts =
-    case insts of
-      [] => []
-    | instruction id opc ops outs :: rest =>
-        (id, compute_hint fn (instruction id opc ops outs)) ::
-        compute_hints_insts fn rest
+    compute_hints_from_insts (all_insts fn) insts
 End
 
 Definition compute_hints_def:
-  compute_hints fn = compute_hints_insts fn (all_insts fn)
+  compute_hints fn =
+    let insts = all_insts fn in
+      compute_hints_from_insts insts insts
+End
+
+Definition cmp_after_action_for_inst_insts_def:
+  cmp_after_action_for_inst_insts insts inst =
+    case inst_output inst of
+      NONE => []
+    | SOME v =>
+        let uses = uses_of_var_insts v insts in
+          if ~cmp_flip_hint_for_uses insts inst uses then []
+          else
+            (case uses of
+               [after] =>
+                 (case after.inst_opcode of
+                    ISZERO => [(after.inst_id, CMP_AFTER_REPLACE v)]
+                  | ASSERT => [(after.inst_id, CMP_AFTER_INSERT v)]
+                  | _ => [])
+             | _ => [])
 End
 
 Definition cmp_after_action_for_inst_def:
   cmp_after_action_for_inst fn inst =
-    if ~cmp_flip_hint fn inst then []
-    else
-      case inst_output inst of
-        NONE => []
-      | SOME v =>
-          (case uses_of_var fn v of
-             [after] =>
-               (case after.inst_opcode of
-                  ISZERO => [(after.inst_id, CMP_AFTER_REPLACE v)]
-                | ASSERT => [(after.inst_id, CMP_AFTER_INSERT v)]
-                | _ => [])
-           | _ => [])
+    cmp_after_action_for_inst_insts (all_insts fn) inst
+End
+
+Definition compute_cmp_after_from_insts_acc_def:
+  compute_cmp_after_from_insts_acc insts work acc =
+    case work of
+      [] => REVERSE acc
+    | inst::rest =>
+        let acts = cmp_after_action_for_inst_insts insts inst in
+          compute_cmp_after_from_insts_acc insts rest (rev_prepend acts acc)
+End
+
+Definition compute_cmp_after_from_insts_def:
+  compute_cmp_after_from_insts insts work =
+    compute_cmp_after_from_insts_acc insts work []
 End
 
 Definition compute_cmp_after_insts_def:
   compute_cmp_after_insts fn insts =
-    case insts of
-      [] => []
-    | inst::rest =>
-        cmp_after_action_for_inst fn inst ++
-        compute_cmp_after_insts fn rest
+    compute_cmp_after_from_insts (all_insts fn) insts
 End
 
 Definition compute_cmp_after_def:
-  compute_cmp_after fn = compute_cmp_after_insts fn (all_insts fn)
+  compute_cmp_after fn =
+    let insts = all_insts fn in
+      compute_cmp_after_from_insts insts insts
 End
 
 Definition cmp_after_lookup_def:
@@ -224,29 +290,38 @@ Definition find_inst_id_def:
   find_inst_id fn id = find_inst_id_insts id (all_insts fn)
 End
 
-Definition iszero_chain_aux_def:
-  iszero_chain_aux fn 0 op acc = acc /\
-  iszero_chain_aux fn (SUC n) op acc =
+Definition iszero_chain_aux_insts_def:
+  iszero_chain_aux_insts insts 0 op acc = acc /\
+  iszero_chain_aux_insts insts (SUC n) op acc =
     case op of
       Var v =>
-        (case find_inst_output fn v of
+        (case find_inst_output_insts v insts of
            NONE => acc
          | SOME inst =>
              if inst.inst_opcode = ISZERO then
                (case inst.inst_operands of
-                  [op'] => iszero_chain_aux fn n op' (inst::acc)
+                  [op'] => iszero_chain_aux_insts insts n op' (inst::acc)
                 | _ => acc)
              else acc)
     | _ => acc
 End
 
+Definition iszero_chain_aux_def:
+  iszero_chain_aux fn n op acc = iszero_chain_aux_insts (all_insts fn) n op acc
+End
+
+Definition iszero_chain_insts_def:
+  iszero_chain_insts insts op =
+    iszero_chain_aux_insts insts (LENGTH insts) op []
+End
+
 Definition iszero_chain_def:
   iszero_chain fn op =
-    iszero_chain_aux fn (LENGTH (all_insts fn)) op []
+    iszero_chain_insts (all_insts fn) op
 End
 
 Definition iszero_subst_for_use_def:
-  iszero_subst_for_use fn v chain use_inst =
+  iszero_subst_for_use v chain use_inst =
     if use_inst.inst_opcode = ISZERO then []
     else
       let k = LENGTH chain in
@@ -267,8 +342,22 @@ Definition iszero_subst_for_use_def:
                 | _ => []))
 End
 
-Definition iszero_subst_for_inst_def:
-  iszero_subst_for_inst fn inst =
+Definition iszero_subst_for_uses_acc_def:
+  iszero_subst_for_uses_acc v chain uses acc =
+    case uses of
+      [] => REVERSE acc
+    | use_inst::rest =>
+        let sigma = iszero_subst_for_use v chain use_inst in
+          iszero_subst_for_uses_acc v chain rest (rev_prepend sigma acc)
+End
+
+Definition iszero_subst_for_uses_def:
+  iszero_subst_for_uses v chain uses =
+    iszero_subst_for_uses_acc v chain uses []
+End
+
+Definition iszero_subst_for_inst_insts_def:
+  iszero_subst_for_inst_insts insts inst =
     case inst.inst_opcode of
       ISZERO =>
         (case inst_output inst of
@@ -276,26 +365,42 @@ Definition iszero_subst_for_inst_def:
          | SOME v =>
              (case inst.inst_operands of
                 [op] =>
-                  let chain = iszero_chain fn op in
+                  let chain = iszero_chain_insts insts op in
                     if chain = [] then []
                     else
-                      FLAT (MAP (iszero_subst_for_use fn v chain)
-                                (uses_of_var fn v))
+                      iszero_subst_for_uses v chain (uses_of_var_insts v insts)
               | _ => []))
     | _ => []
 End
 
+Definition iszero_subst_for_inst_def:
+  iszero_subst_for_inst fn inst =
+    iszero_subst_for_inst_insts (all_insts fn) inst
+End
+
+Definition compute_iszero_subst_from_insts_acc_def:
+  compute_iszero_subst_from_insts_acc insts work acc =
+    case work of
+      [] => REVERSE acc
+    | inst::rest =>
+        let sigma = iszero_subst_for_inst_insts insts inst in
+          compute_iszero_subst_from_insts_acc insts rest (rev_prepend sigma acc)
+End
+
+Definition compute_iszero_subst_from_insts_def:
+  compute_iszero_subst_from_insts insts work =
+    compute_iszero_subst_from_insts_acc insts work []
+End
+
 Definition compute_iszero_subst_insts_def:
   compute_iszero_subst_insts fn insts =
-    case insts of
-      [] => []
-    | inst::rest =>
-        iszero_subst_for_inst fn inst ++
-        compute_iszero_subst_insts fn rest
+    compute_iszero_subst_from_insts (all_insts fn) insts
 End
 
 Definition compute_iszero_subst_def:
-  compute_iszero_subst fn = compute_iszero_subst_insts fn (all_insts fn)
+  compute_iszero_subst fn =
+    let insts = all_insts fn in
+      compute_iszero_subst_from_insts insts insts
 End
 
 Definition subst_operands_use_aux_def:
@@ -317,14 +422,30 @@ Definition subst_inst_use_def:
       subst_operands_use_aux sigma inst.inst_id 0 inst.inst_operands
 End
 
+Definition subst_insts_use_def:
+  subst_insts_use sigma insts =
+    case insts of
+      [] => []
+    | inst::rest =>
+        subst_inst_use sigma inst :: subst_insts_use sigma rest
+End
+
 Definition subst_block_use_def:
   subst_block_use sigma bb =
-    bb with bb_instructions := MAP (subst_inst_use sigma) bb.bb_instructions
+    bb with bb_instructions := subst_insts_use sigma bb.bb_instructions
+End
+
+Definition subst_blocks_use_def:
+  subst_blocks_use sigma bbs =
+    case bbs of
+      [] => []
+    | bb::rest =>
+        subst_block_use sigma bb :: subst_blocks_use sigma rest
 End
 
 Definition subst_function_use_def:
   subst_function_use sigma fn =
-    fn with fn_blocks := MAP (subst_block_use sigma) fn.fn_blocks
+    fn with fn_blocks := subst_blocks_use sigma fn.fn_blocks
 End
 
 (* Operand substitution (fmap from var name to var name) *)
