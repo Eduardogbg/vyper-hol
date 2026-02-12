@@ -1,4 +1,5 @@
 # Venom compiler passes
 INCLUDES = algebraic_optimization \
+           ../analysis \
            phi_elimination \
            revert_to_assert
